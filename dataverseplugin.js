@@ -1,151 +1,232 @@
-import { LitElement, html, css } from 'lit';
-import * as msal from '@azure/msal-browser';
+import {
+    css,
+    html,
+    LitElement,
+} from 'https://cdn.jsdelivr.net/gh/lit/dist@2/all/lit-all.min.js';
 
 export class DataverseCascadingDropdown extends LitElement {
     static properties = {
-        accessToken: { type: String },
+        selectedCountryId: { type: String },
+        selectedCountryName: { type: String },
+        selectedCityId: { type: String },
+        selectedCityName: { type: String },
         countries: { type: Array },
         cities: { type: Array },
-        selectedCountry: { type: String }
+        authToken: { type: String }
     };
+
+    static styles = css`
+        :host {
+            display: block;
+            font-family: var(--ntx-font-family, Arial, sans-serif);
+        }
+        select {
+            width: 100%;
+            padding: 8px;
+            margin-bottom: 8px;
+            border: 1px solid var(--ntx-border-color, #ccc);
+            border-radius: 4px;
+            background-color: white;
+            color: black;
+            font-size: 16px;
+        }
+        select:disabled {
+            background-color: #f5f5f5;
+            color: gray;
+        }
+        option {
+            background-color: white;
+            color: black;
+        }
+    `;
 
     constructor() {
         super();
-        this.accessToken = ''; // Will be set dynamically
+        this.selectedCountryId = '';
+        this.selectedCountryName = '';
+        this.selectedCityId = '';
+        this.selectedCityName = '';
         this.countries = [];
         this.cities = [];
-        this.selectedCountry = '';
-        this.dataverseUrl = 'https://safalo.crm.dynamics.com/api/data/v9.2/';
+        this.authToken = null;
+    }
 
-        // MSAL Configuration (Replace with your actual values)
-        this.msalConfig = {
-            auth: {
-                clientId: 'cf764a7f-b412-4621-a5c9-a95dcaa2383c', // Replace with Azure AD App Client ID
-                authority: 'https://login.microsoftonline.com/5a2beb23-b1a5-4fc5-90b2-2520f82f9a3b', // Replace with your Tenant ID
-                redirectUri: 'https://us.nintex.io' // Replace with your Nintex Forms domain
-            }
+    static getMetaConfig() {
+        return {
+            controlName: 'Dataverse Cascading Dropdown',
+            fallbackDisableSubmit: false,
+            version: '1.6',
+            properties: {
+                selectedCountryName: {
+                    type: 'string',
+                    title: 'Selected Country',
+                    isValueField: true
+                },
+                selectedCityName: {
+                    type: 'string',
+                    title: 'Selected City',
+                    isValueField: true
+                }
+            },
+            events: ['ntx-value-change']
         };
-
-        this.msalInstance = new msal.PublicClientApplication(this.msalConfig);
     }
 
     async connectedCallback() {
         super.connectedCallback();
-        this.accessToken = await this.getAccessToken();
-        await this.loadCountries();
+        await this.getToken();
     }
 
-    async getAccessToken() {
+    async getToken() {
+        if (this.authToken) return this.authToken;
+
+        const proxyEndpoint = "https://dataversemiddlewareapp.azurewebsites.net/api/GetDataverseToken";
+
         try {
-            // Login user with popup
-            const loginResponse = await this.msalInstance.loginPopup({
-                scopes: ["https://safalo.crm.dynamics.com/.default"]
+            const response = await fetch(proxyEndpoint, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                }
             });
 
-            // Acquire token silently
-            const tokenResponse = await this.msalInstance.acquireTokenSilent({
-                scopes: ["https://safalo.crm.dynamics.com/.default"],
-                account: loginResponse.account
-            });
+            if (!response.ok) throw new Error(`Token request failed: ${response.status}`);
 
-            return tokenResponse.accessToken;
+            const data = await response.json();
+            this.authToken = data.access_token;
+            sessionStorage.setItem("authToken", this.authToken);
+
+            await this.loadCountries();
+            return this.authToken;
         } catch (error) {
-            console.error("Error acquiring token:", error);
-            // If silent authentication fails, try interactive login
-            const tokenResponse = await this.msalInstance.acquireTokenPopup({
-                scopes: ["https://safalo.crm.dynamics.com/.default"]
-            });
-            return tokenResponse.accessToken;
+            console.error("Error retrieving token:", error);
+            return null;
         }
     }
 
     async loadCountries() {
-        if (!this.accessToken) return;
+        if (!this.authToken) {
+            console.error("No authentication token available.");
+            return;
+        }
+
         try {
-            const response = await fetch(`${this.dataverseUrl}crb53_countrieses`, {
-                headers: {
-                    'Authorization': `Bearer ${this.accessToken}`,
-                    'OData-MaxVersion': '4.0',
-                    'OData-Version': '4.0',
-                    'Accept': 'application/json'
+            const response = await fetch(
+                "https://safalo.crm.dynamics.com/api/data/v9.2/crb53_countrieses",
+                {
+                    method: "GET",
+                    headers: {
+                        "Authorization": `Bearer ${this.authToken}`,
+                        "Accept": "application/json"
+                    }
                 }
-            });
+            );
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                console.error("Error loading countries:", errorData);
+                throw new Error(`Failed to load countries: ${errorData.error || response.statusText}`);
+            }
+
             const data = await response.json();
             this.countries = data.value;
+            this.requestUpdate();
         } catch (error) {
-            console.error('Error loading countries:', error);
+            console.error("Error loading countries:", error);
         }
     }
 
     async loadCities(countryId) {
-        if (!this.accessToken) return;
+        if (!countryId) {
+            this.cities = [];
+            this.requestUpdate();
+            return;
+        }
+
         try {
             const response = await fetch(
-                `${this.dataverseUrl}crb53_citieses?$filter=_crb53_countrylookup_value eq '${countryId}'`,
+                `https://safalo.crm.dynamics.com/api/data/v9.2/crb53_citieses?$filter=_crb53_countrylookup_value eq '${countryId}'`,
                 {
+                    method: "GET",
                     headers: {
-                        'Authorization': `Bearer ${this.accessToken}`,
-                        'OData-MaxVersion': '4.0',
-                        'OData-Version': '4.0',
-                        'Accept': 'application/json'
+                        "Authorization": `Bearer ${this.authToken}`,
+                        "Accept": "application/json"
                     }
                 }
             );
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                console.error("Error loading cities:", errorData);
+                throw new Error(`Failed to load cities: ${errorData.error || response.statusText}`);
+            }
+
             const data = await response.json();
             this.cities = data.value;
+            this.requestUpdate();
         } catch (error) {
-            console.error('Error loading cities:', error);
+            console.error("Error loading cities:", error);
         }
     }
 
     handleCountryChange(e) {
-        this.selectedCountry = e.target.value;
-        this.cities = []; // Clear previous cities
-        if (this.selectedCountry) {
-            this.loadCities(this.selectedCountry);
-        }
+        const selectedOption = e.target.selectedOptions[0];
+        this.selectedCountryId = selectedOption.value;
+        this.selectedCountryName = selectedOption.text;
+        this.selectedCityId = "";
+        this.selectedCityName = "";
+
+        this.loadCities(this.selectedCountryId); // ✅ Call `loadCities()` when country changes
+        this.requestUpdate();
+
+        this.dispatchEvent(new CustomEvent("ntx-value-change", {
+            detail: {
+                selectedCountry: this.selectedCountryName,
+                selectedCity: this.selectedCityName
+            },
+            bubbles: true,
+            composed: true
+        }));
     }
 
-    static styles = css`
-    :host {
-      display: block;
-      width: 100%;
-      font-family: Arial, sans-serif;
+    handleCityChange(e) {
+        const selectedOption = e.target.selectedOptions[0];
+        this.selectedCityId = selectedOption.value;
+        this.selectedCityName = selectedOption.text;
+        this.requestUpdate();
+
+        this.dispatchEvent(new CustomEvent("ntx-value-change", {
+            detail: {
+                selectedCountry: this.selectedCountryName,
+                selectedCity: this.selectedCityName
+            },
+            bubbles: true,
+            composed: true
+        }));
     }
-    .dropdown-container {
-      margin-bottom: 1rem;
-    }
-    label {
-      margin-right: 0.5rem;
-      font-weight: bold;
-    }
-    select {
-      padding: 0.5rem;
-      min-width: 200px;
-    }
-  `;
 
     render() {
         return html`
-      <div class="dropdown-container">
-        <label for="country-dropdown">Select Country:</label>
-        <select id="country-dropdown" @change=${this.handleCountryChange}>
-          <option value="">-- Select a country --</option>
-          ${this.countries.map(
-            country => html`<option value="${country.crb53_countriesid}">${country.crb53_countryname}</option>`
-        )}
-        </select>
-      </div>
-      <div class="dropdown-container">
-        <label for="city-dropdown">Select City:</label>
-        <select id="city-dropdown">
-          <option value="">-- Select a city --</option>
-          ${this.cities.map(
-            city => html`<option value="${city.crb53_citiesid}">${city.crb53_cityname} (${city.crb53_region})</option>`
-        )}
-        </select>
-      </div>
-    `;
+            <div>
+                <select @change=${this.handleCountryChange} .value=${this.selectedCountryId}>
+                    <option value="" disabled hidden>Select Country</option>
+                    ${this.countries.map(country => html`
+                        <option value=${country.crb53_countriesid} ?selected=${this.selectedCountryId === country.crb53_countriesid}>
+                            ${country.crb53_countryname}
+                        </option>
+                    `)}
+                </select>
+
+                <select @change=${this.handleCityChange} .value=${this.selectedCityId} ?disabled=${!this.selectedCountryId}>
+                    <option value="" disabled hidden>Select City</option>
+                    ${this.cities.map(city => html`
+                        <option value=${city.crb53_citiesid} ?selected=${this.selectedCityId === city.crb53_citiesid}>
+                            ${city.crb53_cityname}
+                        </option>
+                    `)}
+                </select>
+            </div>
+        `;
     }
 }
 
